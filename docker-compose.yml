@@ -1,0 +1,55 @@
+services:
+  db:
+    image: postgres:15-alpine
+    container_name: sensors_db
+    environment:
+      POSTGRES_USER: sensor_user
+      POSTGRES_PASSWORD: strong_password
+      POSTGRES_DB: sensors_db
+    volumes:
+      - db_data:/var/lib/postgresql/data
+    restart: unless-stopped
+
+  api:
+    build: ./api
+    container_name: sensors_api
+    environment:
+      DB_HOST: db
+      DB_NAME: sensors_db
+      DB_USER: sensor_user
+      DB_PASSWORD: strong_password
+    ports:
+      - "5000:5000"
+    depends_on:
+      - db
+
+  analyzer:
+    build: ./analyzer
+    container_name: anomaly_detector
+    environment:
+      DB_HOST: db
+      DB_NAME: sensors_db
+      DB_USER: sensor_user
+      DB_PASSWORD: strong_password
+      BOT_TOKEN: ${BOT_TOKEN}
+    depends_on:
+      - db
+
+  telegram_bot:
+    build: ./telegram_bot
+    container_name: telegram_bot
+    environment:
+      DB_HOST: db
+      DB_NAME: sensors_db
+      DB_USER: sensor_user
+      DB_PASSWORD: strong_password
+      BOT_TOKEN: ${BOT_TOKEN}
+    depends_on:
+      - db
+    dns:
+      - 8.8.8.8
+      - 1.1.1.1
+
+
+volumes:
+  db_data:
