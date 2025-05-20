@@ -19,14 +19,9 @@ class ParamSelect(StatesGroup):
     sensor = State()
     parameter = State()
     count = State()
+    target_id = State()
 
-# Главное меню
-main_kb = types.ReplyKeyboardMarkup(resize_keyboard=True, keyboard=[
-    [types.KeyboardButton(text="🔎 Статус")],
-    [types.KeyboardButton(text="📊 Последние показания")]
-])
-
-# Подключение к боту
+# Подключение к окружению
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 DB_HOST = os.getenv("DB_HOST")
 DB_NAME = os.getenv("DB_NAME")
@@ -35,13 +30,18 @@ DB_PASSWORD = os.getenv("DB_PASSWORD")
 
 bot = Bot(token=BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
 dp = Dispatcher(storage=MemoryStorage())
-
-# Глобальное подключение к базе
 conn = None
+
+def get_main_kb(is_admin=False):
+    keyboard = [[types.KeyboardButton(text="🔎 Статус")],
+                [types.KeyboardButton(text="📊 Последние показания")]]
+    if is_admin:
+        keyboard.append([types.KeyboardButton(text="👥 Пользователи")])
+        keyboard.append([types.KeyboardButton(text="🔑 Выдать админа"), types.KeyboardButton(text="🔄 Понизить")])
+    return types.ReplyKeyboardMarkup(resize_keyboard=True, keyboard=keyboard)
 
 @dp.message(Command("start"))
 async def start_cmd(msg: types.Message):
-    global conn
     user_id = msg.from_user.id
     username = msg.from_user.username or ""
     full_name = msg.from_user.full_name or ""
@@ -50,130 +50,65 @@ async def start_cmd(msg: types.Message):
         cur.execute("SELECT * FROM users WHERE telegram_id = %s", (user_id,))
         user = cur.fetchone()
         if not user:
-            cur.execute("""
-                INSERT INTO users (telegram_id, full_name, username, role)
-                VALUES (%s, %s, %s, %s)
-            """, (user_id, full_name, username, 'operator'))
-            await msg.answer("✅ Вы зарегистрированы как оператор.", reply_markup=main_kb)
+            cur.execute("INSERT INTO users (telegram_id, full_name, username, role) VALUES (%s, %s, %s, %s)",
+                        (user_id, full_name, username, 'operator'))
+            role = 'operator'
         else:
-            await msg.answer("👋 Добро пожаловать!", reply_markup=main_kb)
+            role = user[4]
 
-@dp.message(Command("users"))
-async def show_users(msg: types.Message):
-    global conn
+    await msg.answer("👋 Добро пожаловать!", reply_markup=get_main_kb(is_admin=(role == 'admin')))
+
+@dp.message(F.text == "🔎 Статус")
+async def status_sensors(msg: types.Message):
     user_id = msg.from_user.id
     with conn.cursor() as cur:
         cur.execute("SELECT role FROM users WHERE telegram_id = %s", (user_id,))
         row = cur.fetchone()
-        if not row or row[0] != 'admin':
-            await msg.reply("⛔ Только для администраторов.")
-            return
-        cur.execute("SELECT full_name, username, role, registered_at FROM users")
-        users = cur.fetchall()
+        if row and row[0] == 'admin':
+            cur.execute("SELECT DISTINCT telegram_id, username FROM users")
+            users = cur.fetchall()
+            kb = InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text=f"👤 @{u[1]}", callback_data=f"status_user:{u[0]}")] for u in users
+            ])
+            await msg.answer("Выберите пользователя:", reply_markup=kb)
+        else:
+            await show_status_for_user(msg, user_id)
 
-    text = "👥 <b>Пользователи:</b>\n"
-    for name, username, role, reg_at in users:
-        text += f"{name} (@{username}) — <i>{role}</i>, {reg_at.strftime('%Y-%m-%d %H:%M')}\n"
-    await msg.reply(text or "Нет пользователей.")
+@dp.callback_query(F.data.startswith("status_user:"))
+async def status_user_selected(callback: types.CallbackQuery):
+    target_id = int(callback.data.split(":")[1])
+    await show_status_for_user(callback.message, target_id)
 
-@dp.message(Command("setadmin"))
-async def set_admin(msg: types.Message):
-    global conn
-    admin_id = msg.from_user.id
-    parts = msg.text.strip().split()
-    if len(parts) != 2 or not parts[1].startswith("@"):
-        await msg.reply("Использование: /setadmin @username")
-        return
-    username = parts[1][1:]
-
+async def show_status_for_user(msg, telegram_id):
     with conn.cursor() as cur:
-        cur.execute("SELECT role FROM users WHERE telegram_id = %s", (admin_id,))
-        role_row = cur.fetchone()
-        if not role_row or role_row[0] != 'admin':
-            await msg.reply("⛔ Только администратор может менять роли.")
-            return
-
-        cur.execute("SELECT telegram_id FROM users WHERE username = %s", (username,))
-        target = cur.fetchone()
-        if not target:
-            await msg.reply(f"❌ Пользователь @{username} не найден.")
-            return
-        if target[0] == admin_id:
-            await msg.reply("🚫 Нельзя изменить свою собственную роль.")
-            return
-
-        cur.execute("UPDATE users SET role = 'admin' WHERE username = %s", (username,))
-        await msg.reply(f"✅ @{username} теперь администратор.")
-
-@dp.message(Command("setoperator"))
-async def set_operator(msg: types.Message):
-    global conn
-    admin_id = msg.from_user.id
-    parts = msg.text.strip().split()
-    if len(parts) != 2 or not parts[1].startswith("@"):
-        await msg.reply("Использование: /setoperator @username")
-        return
-    username = parts[1][1:]
-
-    with conn.cursor() as cur:
-        cur.execute("SELECT role FROM users WHERE telegram_id = %s", (admin_id,))
-        role_row = cur.fetchone()
-        if not role_row or role_row[0] != 'admin':
-            await msg.reply("⛔ Только администратор может менять роли.")
-            return
-
-        cur.execute("SELECT telegram_id FROM users WHERE username = %s", (username,))
-        target = cur.fetchone()
-        if not target:
-            await msg.reply(f"❌ Пользователь @{username} не найден.")
-            return
-        if target[0] == admin_id:
-            await msg.reply("🚫 Нельзя изменить свою собственную роль.")
-            return
-
-        cur.execute("UPDATE users SET role = 'operator' WHERE username = %s", (username,))
-        await msg.reply(f"🔁 @{username} теперь оператор.")
-
-@dp.message(F.text == "🔎 Статус")
-async def status_sensors(msg: types.Message):
-    global conn
-    user_id = msg.from_user.id
-    with conn.cursor() as cur:
-        cur.execute("SELECT DISTINCT sensor FROM sensor_data_ext WHERE telegram_id = %s", (user_id,))
+        cur.execute("SELECT DISTINCT sensor FROM sensor_data_ext WHERE telegram_id = %s", (telegram_id,))
         sensors = cur.fetchall()
-
     if not sensors:
         await msg.answer("Нет данных.")
         return
-
     kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text=s[0], callback_data=f"status:{s[0]}")] for s in sensors
+        [InlineKeyboardButton(text=s[0], callback_data=f"status:{telegram_id}:{s[0]}")] for s in sensors
     ])
     await msg.answer("Выберите датчик:", reply_markup=kb)
 
 @dp.callback_query(F.data.startswith("status:"))
 async def status_sensor_selected(callback: types.CallbackQuery):
-    global conn
-    sensor = callback.data.split(":")[1]
-    user_id = callback.from_user.id
+    _, telegram_id, sensor = callback.data.split(":")
     with conn.cursor() as cur:
         cur.execute("""
             SELECT parameter, value, unit, timestamp
             FROM sensor_data_ext
             WHERE sensor = %s AND telegram_id = %s
             ORDER BY timestamp DESC
-        """, (sensor, user_id))
+        """, (sensor, telegram_id))
         rows = cur.fetchall()
-
     result = {}
     for param, value, unit, ts in rows:
         if param not in result:
             result[param] = (value, unit, ts)
-
     if not result:
         await callback.message.answer("Нет данных.")
         return
-
     text = f"📟 <b>{sensor}</b>:\n"
     for param, (val, unit, ts) in result.items():
         text += f"{param} = {val} {unit}\n"
@@ -181,16 +116,33 @@ async def status_sensor_selected(callback: types.CallbackQuery):
 
 @dp.message(F.text == "📊 Последние показания")
 async def latest_sensor_select(msg: types.Message, state: FSMContext):
-    global conn
     user_id = msg.from_user.id
     with conn.cursor() as cur:
-        cur.execute("SELECT DISTINCT sensor FROM sensor_data_ext WHERE telegram_id = %s", (user_id,))
-        sensors = cur.fetchall()
+        cur.execute("SELECT role FROM users WHERE telegram_id = %s", (user_id,))
+        row = cur.fetchone()
+        if row and row[0] == 'admin':
+            cur.execute("SELECT DISTINCT telegram_id, username FROM users")
+            users = cur.fetchall()
+            kb = InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text=f"👤 @{u[1]}", callback_data=f"latest_user:{u[0]}")] for u in users
+            ])
+            await msg.answer("Выберите пользователя:", reply_markup=kb)
+        else:
+            await start_latest_sensor_selection(msg, state, user_id)
 
+@dp.callback_query(F.data.startswith("latest_user:"))
+async def latest_user_selected(callback: types.CallbackQuery, state: FSMContext):
+    target_id = int(callback.data.split(":")[1])
+    await start_latest_sensor_selection(callback.message, state, target_id)
+
+async def start_latest_sensor_selection(msg, state: FSMContext, telegram_id):
+    await state.update_data(target_id=telegram_id)
+    with conn.cursor() as cur:
+        cur.execute("SELECT DISTINCT sensor FROM sensor_data_ext WHERE telegram_id = %s", (telegram_id,))
+        sensors = cur.fetchall()
     if not sensors:
         await msg.answer("Нет данных.")
         return
-
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text=s[0], callback_data=f"param_sensor:{s[0]}")] for s in sensors
     ])
@@ -198,18 +150,16 @@ async def latest_sensor_select(msg: types.Message, state: FSMContext):
 
 @dp.callback_query(F.data.startswith("param_sensor:"))
 async def choose_parameter(callback: types.CallbackQuery, state: FSMContext):
-    global conn
     sensor = callback.data.split(":")[1]
-    user_id = callback.from_user.id
     await state.update_data(sensor=sensor)
-
+    data = await state.get_data()
+    telegram_id = data.get("target_id", callback.from_user.id)
     with conn.cursor() as cur:
         cur.execute("""
             SELECT DISTINCT parameter FROM sensor_data_ext
             WHERE sensor = %s AND telegram_id = %s
-        """, (sensor, user_id))
+        """, (sensor, telegram_id))
         params = cur.fetchall()
-
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text=p[0], callback_data=f"param_select:{p[0]}")] for p in params
     ])
@@ -224,8 +174,6 @@ async def ask_count(callback: types.CallbackQuery, state: FSMContext):
 
 @dp.message(ParamSelect.count)
 async def show_last_values(msg: types.Message, state: FSMContext):
-    global conn
-    user_id = msg.from_user.id
     try:
         n = int(msg.text)
         if n <= 0:
@@ -233,24 +181,21 @@ async def show_last_values(msg: types.Message, state: FSMContext):
     except:
         await msg.answer("Введите положительное число.")
         return
-
     data = await state.get_data()
     sensor = data['sensor']
     parameter = data['parameter']
-
+    telegram_id = data.get("target_id", msg.from_user.id)
     with conn.cursor() as cur:
         cur.execute("""
             SELECT timestamp, value
             FROM sensor_data_ext
             WHERE telegram_id = %s AND sensor = %s AND parameter = %s
             ORDER BY timestamp DESC LIMIT %s
-        """, (user_id, sensor, parameter, n))
+        """, (telegram_id, sensor, parameter, n))
         rows = cur.fetchall()
-
     if not rows:
         await msg.answer("Нет данных.")
         return
-
     df = pd.DataFrame(rows, columns=["timestamp", "value"]).sort_values("timestamp")
     plt.figure(figsize=(8, 4))
     plt.plot(df["timestamp"], df["value"], marker="o")
@@ -261,35 +206,8 @@ async def show_last_values(msg: types.Message, state: FSMContext):
     path = "plot.png"
     plt.savefig(path)
     plt.close()
-
     photo = FSInputFile(path)
     await msg.answer_photo(photo)
     await state.clear()
 
-# Запуск
-async def main():
-    global conn
-    conn = psycopg2.connect(
-        host=DB_HOST,
-        database=DB_NAME,
-        user=DB_USER,
-        password=DB_PASSWORD
-    )
-    conn.autocommit = True
 
-    with conn.cursor() as cur:
-        cur.execute("""
-        CREATE TABLE IF NOT EXISTS users (
-            id SERIAL PRIMARY KEY,
-            telegram_id BIGINT UNIQUE,
-            full_name TEXT,
-            username TEXT,
-            role TEXT,
-            registered_at TIMESTAMP DEFAULT NOW()
-        );
-        """)
-
-    await dp.start_polling(bot)
-
-if __name__ == "__main__":
-    asyncio.run(main())
