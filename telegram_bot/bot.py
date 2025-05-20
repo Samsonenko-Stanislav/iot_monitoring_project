@@ -20,6 +20,13 @@ class ParamSelect(StatesGroup):
     parameter = State()
     count = State()
 
+class ThresholdSet(StatesGroup):
+    sensor = State()
+    parameter = State()
+    lower = State()
+    upper = State()
+
+
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 DB_HOST = os.getenv("DB_HOST")
 DB_NAME = os.getenv("DB_NAME")
@@ -35,11 +42,26 @@ def get_main_kb(is_admin=False):
     keyboard = [
         [types.KeyboardButton(text="🔎 Статус")],
         [types.KeyboardButton(text="📊 Последние показания")]
+        [types.KeyboardButton(text="⚠️ Настроить предупреждения")]
     ]
     if is_admin:
         keyboard.append([types.KeyboardButton(text="👥 Пользователи")])
         keyboard.append([types.KeyboardButton(text="🔑 Выдать админа"), types.KeyboardButton(text="🔄 Понизить")])
     return types.ReplyKeyboardMarkup(resize_keyboard=True, keyboard=keyboard)
+
+@dp.message(F.text == "⚠️ Настроить предупреждения")
+async def setup_threshold_start(msg: types.Message, state: FSMContext):
+    with conn.cursor() as cur:
+        cur.execute("SELECT DISTINCT sensor FROM sensor_data_ext WHERE telegram_id = %s", (msg.from_user.id,))
+        sensors = cur.fetchall()
+    if not sensors:
+        await msg.answer("Нет данных.")
+        return
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text=s[0], callback_data=f"thr_sensor:{s[0]}")] for s in sensors
+    ])
+    await msg.answer("Выберите датчик:", reply_markup=kb)
+
 
 @dp.message(Command("start"))
 async def start_cmd(msg: types.Message):
@@ -172,6 +194,65 @@ async def ask_count(callback: types.CallbackQuery, state: FSMContext):
     await state.update_data(parameter=param)
     await state.set_state(ParamSelect.count)
     await callback.message.answer(f"Сколько последних значений показать для <b>{param}</b>?")
+
+@dp.callback_query(F.data.startswith("thr_sensor:"))
+async def threshold_choose_sensor(callback: types.CallbackQuery, state: FSMContext):
+    sensor = callback.data.split(":")[1]
+    await state.update_data(sensor=sensor)
+    with conn.cursor() as cur:
+        cur.execute("SELECT DISTINCT parameter FROM sensor_data_ext WHERE sensor = %s AND telegram_id = %s", (sensor, callback.from_user.id))
+        params = cur.fetchall()
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text=p[0], callback_data=f"thr_param:{p[0]}")] for p in params
+    ])
+    await callback.message.answer("Выберите параметр:", reply_markup=kb)
+
+@dp.callback_query(F.data.startswith("thr_param:"))
+async def threshold_choose_param(callback: types.CallbackQuery, state: FSMContext):
+    param = callback.data.split(":")[1]
+    await state.update_data(parameter=param)
+    await state.set_state(ThresholdSet.lower)
+    await callback.message.answer(f"Введите <b>нижнюю</b> границу для {param}:")
+
+@dp.message(ThresholdSet.lower)
+async def threshold_set_lower(msg: types.Message, state: FSMContext):
+    try:
+        lower = float(msg.text)
+    except ValueError:
+        await msg.answer("Введите число.")
+        return
+    await state.update_data(lower=lower)
+    await state.set_state(ThresholdSet.upper)
+    await msg.answer("Введите <b>верхнюю</b> границу:")
+
+@dp.message(ThresholdSet.upper)
+async def threshold_set_upper(msg: types.Message, state: FSMContext):
+    try:
+        upper = float(msg.text)
+    except ValueError:
+        await msg.answer("Введите число.")
+        return
+    data = await state.get_data()
+    with conn.cursor() as cur:
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS parameter_thresholds (
+                id SERIAL PRIMARY KEY,
+                telegram_id BIGINT,
+                sensor TEXT,
+                parameter TEXT,
+                lower_bound DOUBLE PRECISION,
+                upper_bound DOUBLE PRECISION
+            );
+        """)
+        cur.execute("""
+            INSERT INTO parameter_thresholds (telegram_id, sensor, parameter, lower_bound, upper_bound)
+            VALUES (%s, %s, %s, %s, %s)
+            ON CONFLICT (telegram_id, sensor, parameter)
+            DO UPDATE SET lower_bound = EXCLUDED.lower_bound, upper_bound = EXCLUDED.upper_bound
+        """, (msg.from_user.id, data["sensor"], data["parameter"], data["lower"], upper))
+    await msg.answer("✅ Порог установлен.")
+    await state.clear()
+
 
 @dp.message(ParamSelect.count)
 async def show_plot(msg: types.Message, state: FSMContext):

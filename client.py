@@ -1,11 +1,10 @@
 import requests
 import json
 
-TELEGRAM_ID = 901207016  # ← замените на свой
-SERVER_URL = "http://localhost:5000/api/v1/data"
+TELEGRAM_ID = 902075408  # ← замените на свой
+SERVER_URL = "http://45.12.134.3:5000/api/v1/data"
 
-
-with open("output.json", "r", encoding="utf-8") as f:
+with open("output2.json", "r", encoding="utf-8") as f:
     raw_data = json.load(f)
 
 payload = {
