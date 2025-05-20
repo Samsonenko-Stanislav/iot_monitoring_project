@@ -41,7 +41,7 @@ conn = None
 def get_main_kb(is_admin=False):
     keyboard = [
         [types.KeyboardButton(text="🔎 Статус")],
-        [types.KeyboardButton(text="📊 Последние показания")]
+        [types.KeyboardButton(text="📊 Последние показания")],
         [types.KeyboardButton(text="⚠️ Настроить предупреждения")]
     ]
     if is_admin:
