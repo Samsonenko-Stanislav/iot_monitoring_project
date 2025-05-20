@@ -276,6 +276,19 @@ async def main():
         password=DB_PASSWORD
     )
     conn.autocommit = True
+
+    with conn.cursor() as cur:
+        cur.execute("""
+        CREATE TABLE IF NOT EXISTS users (
+            id SERIAL PRIMARY KEY,
+            telegram_id BIGINT UNIQUE,
+            full_name TEXT,
+            username TEXT,
+            role TEXT,
+            registered_at TIMESTAMP DEFAULT NOW()
+        );
+        """)
+
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
