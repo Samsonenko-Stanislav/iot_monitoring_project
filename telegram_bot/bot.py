@@ -30,8 +30,14 @@ DB_PASSWORD = os.getenv("DB_PASSWORD")
 
 bot = Bot(token=BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
 dp = Dispatcher(storage=MemoryStorage())
-conn = None
 
+conn = psycopg2.connect(
+    host=DB_HOST,
+    database=DB_NAME,
+    user=DB_USER,
+    password=DB_PASSWORD
+)
+conn.autocommit = True
 def get_main_kb(is_admin=False):
     keyboard = [[types.KeyboardButton(text="🔎 Статус")],
                 [types.KeyboardButton(text="📊 Последние показания")]]
