@@ -212,6 +212,75 @@ async def show_plot(msg: types.Message, state: FSMContext):
     await msg.answer_photo(photo)
     await state.clear()
 
+# 👥 Пользователи
+@dp.message(F.text == "👥 Пользователи")
+async def show_users(msg: types.Message):
+    role = await get_user_role(msg.from_user.id)
+    if role != 'admin':
+        await msg.answer("⛔ Доступ запрещён.")
+        return
+
+    with conn.cursor() as cur:
+        cur.execute("SELECT full_name, username, role, registered_at FROM users")
+        rows = cur.fetchall()
+
+    text = "👥 <b>Пользователи:</b>\n"
+    for name, username, role, reg in rows:
+        text += f"{name} (@{username}) — <i>{role}</i>, {reg.strftime('%Y-%m-%d %H:%M')}\n"
+    await msg.answer(text)
+
+# 🔑 Выдать админа
+@dp.message(F.text == "🔑 Выдать админа")
+async def promote_user_list(msg: types.Message):
+    role = await get_user_role(msg.from_user.id)
+    if role != 'admin':
+        await msg.answer("⛔ Доступ запрещён.")
+        return
+
+    with conn.cursor() as cur:
+        cur.execute("SELECT telegram_id, username FROM users WHERE role = 'operator'")
+        ops = cur.fetchall()
+
+    if not ops:
+        await msg.answer("Нет операторов для повышения.")
+        return
+
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text=f"@{u[1]}", callback_data=f"promote:{u[0]}")] for u in ops if u[1]
+    ])
+    await msg.answer("Выберите кого повысить до администратора:", reply_markup=kb)
+
+# 🔄 Понизить
+@dp.message(F.text == "🔄 Понизить")
+async def demote_user_list(msg: types.Message):
+    admin_id = msg.from_user.id
+    with conn.cursor() as cur:
+        cur.execute("SELECT telegram_id, username FROM users WHERE role = 'admin' AND telegram_id != %s", (admin_id,))
+        admins = cur.fetchall()
+
+    if not admins:
+        await msg.answer("Нет других администраторов для понижения.")
+        return
+
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text=f"@{u[1]}", callback_data=f"demote:{u[0]}")] for u in admins if u[1]
+    ])
+    await msg.answer("Выберите кого понизить до оператора:", reply_markup=kb)
+
+@dp.callback_query(F.data.startswith("promote:"))
+async def promote_user(callback: types.CallbackQuery):
+    uid = int(callback.data.split(":")[1])
+    with conn.cursor() as cur:
+        cur.execute("UPDATE users SET role = 'admin' WHERE telegram_id = %s", (uid,))
+    await callback.message.answer("✅ Пользователь повышен до администратора.")
+
+@dp.callback_query(F.data.startswith("demote:"))
+async def demote_user(callback: types.CallbackQuery):
+    uid = int(callback.data.split(":")[1])
+    with conn.cursor() as cur:
+        cur.execute("UPDATE users SET role = 'operator' WHERE telegram_id = %s", (uid,))
+    await callback.message.answer("🔻 Пользователь понижен до оператора.")
+
 async def main():
     global conn
     conn = psycopg2.connect(
@@ -235,6 +304,5 @@ async def main():
         """)
 
     await dp.start_polling(bot)
-
 if __name__ == "__main__":
     asyncio.run(main())
